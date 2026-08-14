@@ -31,7 +31,7 @@ def run_drawing_audit(fab_drawing: Image.Image, setting_out_drawing: Image.Image
     """
     
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         contents=[prompt, fab_drawing, setting_out_drawing],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",

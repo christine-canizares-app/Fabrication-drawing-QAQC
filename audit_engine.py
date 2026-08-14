@@ -11,7 +11,7 @@ class DrawingIssue(BaseModel):
     severity: str = Field(description="High, Medium, or Low")
     box_2d: Optional[List[int]] = Field(
         default=None, 
-        description="Bounding box of the error location on Image 1 (Fabrication Drawing) formatted as [ymin, xmin, ymax, xmax] normalized from 0 to 1000."
+        description="Bounding box of error location on Fabrication Drawing formatted as [ymin, xmin, ymax, xmax] (0-1000 scale)."
     )
 
 class AuditReport(BaseModel):
@@ -19,7 +19,7 @@ class AuditReport(BaseModel):
     issues: List[DrawingIssue]
 
 def highlight_errors(image: Image.Image, issues: List[DrawingIssue]) -> Image.Image:
-    """Draws red highlight boxes and issue tags directly onto the drawing image."""
+    """Overlays red bounding boxes and issue tags directly on the drawing image."""
     annotated_img = image.copy().convert("RGBA")
     overlay = Image.new("RGBA", annotated_img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
@@ -29,21 +29,18 @@ def highlight_errors(image: Image.Image, issues: List[DrawingIssue]) -> Image.Im
         if issue.box_2d and len(issue.box_2d) == 4:
             ymin, xmin, ymax, xmax = issue.box_2d
             
-            # Convert 0-1000 normalized coordinates to actual pixel dimensions
             abs_ymin = int((ymin / 1000.0) * height)
             abs_xmin = int((xmin / 1000.0) * width)
             abs_ymax = int((ymax / 1000.0) * height)
             abs_xmax = int((xmax / 1000.0) * width)
 
-            # Draw semi-transparent red box
             draw.rectangle(
                 [(abs_xmin, abs_ymin), (abs_xmax, abs_ymax)],
-                fill=(255, 0, 0, 40),
+                fill=(255, 0, 0, 45),
                 outline=(255, 0, 0, 255),
                 width=4
             )
             
-            # Draw label tag
             label_text = f"#{idx}: {issue.tag_id}"
             draw.rectangle(
                 [(abs_xmin, max(0, abs_ymin - 25)), (abs_xmin + 130, abs_ymin)],
@@ -53,26 +50,33 @@ def highlight_errors(image: Image.Image, issues: List[DrawingIssue]) -> Image.Im
 
     return Image.alpha_composite(annotated_img, overlay).convert("RGB")
 
-def run_drawing_audit(fab_drawing: Image.Image, setting_out_drawing: Image.Image, api_key: str) -> Tuple[AuditReport, Image.Image]:
-    # Clean whitespace or hidden spaces from the entered API key
+def audit_single_page(
+    fab_page: Image.Image, 
+    setting_out_images: List[Image.Image], 
+    api_key: str, 
+    page_num: int
+) -> Tuple[AuditReport, Image.Image]:
+    """Audits one fabrication drawing page against all setting-out reference pages."""
     clean_key = api_key.strip()
     client = genai.Client(api_key=clean_key)
     
-    prompt = """
+    prompt = f"""
     You are a Senior Structural & Architectural Quality Control Auditor.
-    Analyze the provided Fabrication Drawing (Image 1) and Setting-Out / Tagging Drawing (Image 2).
+    You are evaluating Page {page_num} of a multi-page Fabrication Drawing set (Image 1) against the provided Setting-Out / Tagging Plan(s).
     
     Perform these specific checks:
     1. Check for MISSING DIMENSIONS required for manufacturing.
     2. Check for FINISH MISMATCHES between drawings.
     3. Check SETTING-OUT MISMATCHES (compare member lengths, grid references, and tag IDs).
     
-    CRITICAL: For every issue identified on the Fabrication Drawing (Image 1), provide exact `box_2d` bounding box coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000 pinpointing where the error occurs.
+    CRITICAL: For every issue identified on Page {page_num} of the Fabrication Drawing (Image 1), provide exact `box_2d` bounding box coordinates [ymin, xmin, ymax, xmax] normalized from 0 to 1000 pinpointing where the error occurs.
     """
+    
+    contents = [prompt, fab_page] + setting_out_images
     
     response = client.models.generate_content(
         model='gemini-3.6-flash',
-        contents=[prompt, fab_drawing, setting_out_drawing],
+        contents=contents,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=AuditReport,
@@ -81,6 +85,6 @@ def run_drawing_audit(fab_drawing: Image.Image, setting_out_drawing: Image.Image
     )
     
     report = AuditReport.model_validate_json(response.text)
-    annotated_fab_drawing = highlight_errors(fab_drawing, report.issues)
+    annotated_fab = highlight_errors(fab_page, report.issues)
     
-    return report, annotated_fab_drawing
+    return report, annotated_fab
